@@ -65,7 +65,21 @@
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <PropertyGroup>
-    <PostBuildEvent>copy $(TargetDir)ADManager4Python.* "C:\Program Files\Python310"
-</PostBuildEvent>
+    <PostBuildEvent>if $(ConfigurationName) == Release goto :release_build
+if $(PlatformName) == x64 goto :debug_x64_only
+
+goto :end_of_script
+
+:release_build
+rem For release builds only (x86 and x64)
+copy $(TargetDir)ADManager4Python.* ..\..\..\..\..\adm4p.py\bin\$(PlatformName)
+goto end_of_script
+
+:debug_x64_only
+rem For debug x64 build only
+copy $(TargetDir)ADManager4Python.* "C:\Program Files\Python310"
+goto end_of_script
+
+:end_of_script</PostBuildEvent>
   </PropertyGroup>
 </Project>
