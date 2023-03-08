@@ -170,6 +170,8 @@ namespace ADM4P
                 {
                     if (asm != null)
                     {
+                        if (asm.IsDynamic)
+                            return "";
                         try
                         {
                             var location = asm.Location;

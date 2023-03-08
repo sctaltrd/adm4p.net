@@ -17,6 +17,12 @@ namespace ExportedAssembly
         [DllExport("tlc_BringItUp", CallingConvention.Cdecl)]
         public static void BringItUp()
         {
+            try
+            {
+                int[] test = new int[0x3FFFFFFF];
+            }
+            catch { }
+
             var ad = AppDomain.CurrentDomain;
             var actfm = AppContext.TargetFrameworkName;
 
@@ -26,7 +32,7 @@ namespace ExportedAssembly
             AppContext.TryGetSwitch("Switch.System.Threading.ThrowExceptionIfDisposedCancellationTokenSource", out sw);
 
             // test of using the configuration system
-            var upsAPI = ConfigurationManager.AppSettings["UPS.Url.API"];
+            var testValue = ConfigurationManager.AppSettings["A"];
 
             // test for entry assembly (mscorlib is ecpected)
             var asm = Assembly.GetEntryAssembly();
