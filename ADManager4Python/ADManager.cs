@@ -166,6 +166,21 @@ namespace ADM4P
 
             Assembly AssemblyResolverInFolders()
             {
+                string AssemblyLocation(Assembly asm)
+                {
+                    if (asm != null)
+                    {
+                        try
+                        {
+                            var location = asm.Location;
+                            if (!string.IsNullOrEmpty(location))
+                                return System.IO.Path.GetDirectoryName(location);
+                        }
+                        catch { }
+                    }
+                    return "";
+                }
+
                 // search folders priority:
                 // 1) AppBase (we expect it to have):
                 //    kind of default, kind of redundant - since .Net weould resolve it for us any way;
@@ -175,7 +190,8 @@ namespace ADM4P
                 // 3) Path of requesting assembly
                 // 4) Current / working directory of the process (as it was defined when activating the default domain)
                 // 5) Current / working directory at the time of resolution
-                // 6) Subfolders of each folder included in the search folders priority
+                // 6) "Fair game folders" - locations of all loaded assemblies
+                // 7) Subfolders of each folder included in the search folders priority
                 // NOTE: The flexibility here is rather unlimited - the activation context can pass unlimited number of switches
                 //       (at least 64 if we want to limit ourselves to only a single activation context token)
                 List<string> lstSearchFolders = new List<string>();
@@ -183,12 +199,24 @@ namespace ADM4P
                     lstSearchFolders.Add(AppDomain.CurrentDomain.BaseDirectory);
                 if (!string.IsNullOrEmpty(AppDomain.CurrentDomain.SetupInformation.PrivateBinPath))
                     lstSearchFolders.Add(AppDomain.CurrentDomain.SetupInformation.PrivateBinPath);
-                if (args.RequestingAssembly != null)
+
+                var locationAsm = AssemblyLocation(args.RequestingAssembly);
+                if (!string.IsNullOrEmpty(locationAsm))
                 {
-                    lstSearchFolders.Add(System.IO.Path.GetDirectoryName(args.RequestingAssembly.Location));
+                    lstSearchFolders.Add(locationAsm);
                 }
+
                 lstSearchFolders.Add(s_ActivationContext[constWorkingDir]);
                 lstSearchFolders.Add(System.Environment.CurrentDirectory);
+                
+                foreach (var a in AppDomain.CurrentDomain.GetAssemblies())
+                {
+                    locationAsm = AssemblyLocation(a);
+                    if (!string.IsNullOrEmpty(locationAsm))
+                    {
+                        lstSearchFolders.Add(locationAsm);
+                    }
+                }
 
                 // remove duplicates
                 lstSearchFolders = lstSearchFolders.Distinct().ToList();
