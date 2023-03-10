@@ -1,7 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Reflection;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Security.Policy;
@@ -15,13 +17,28 @@ namespace ADM4P
     {
         #region Activation context
 
+        const string constActivationContextEnvVariable = "ADM_4_PYTHON_ACTIVATION_CONTEXT";
+
         const int constWorkingDir = 0;
         const int constBaseDir = 1;
         const int constAppName = 2;
         const int constBinPath = 3;
         const int constCfgFile = 4;
         const int constTgtFramework = 5;
+        const int constCulture = 6;
+        const int constSwitchesAR = 7;
+        const int constSwitchesGeneral = 8;
+
         private static string[] s_ActivationContext;
+
+        const ulong SWITCH_AR_CONSIDERREQUESTINGASM = 0x0000000000000001;
+        const ulong SWITCH_AR_WORKINGDIR            = 0x0000000000000002;
+        const ulong SWITCH_AR_ACTIVATIONWORKINGDIR  = 0x0000000000000004;
+        const ulong SWITCH_AR_LOADEDASMS            = 0x0000000000000008;
+        const ulong SWITCH_AR_SUBFOLDERS            = 0x0000000000000010;
+        private static ulong s_SwitchesAR           = 0xFFFFFFFFFFFFFFFF;
+
+        private static ulong s_SwitchesGeneral = 0;
 
         #endregion
 
@@ -43,12 +60,13 @@ namespace ADM4P
             if (AppDomain.CurrentDomain.IsDefaultAppDomain())
             {
                 // read activation context from environmet variable
-                string activationContext = System.Environment.GetEnvironmentVariable("ADM_4_PYTHON_ACTIVATION_CONTEXT");
+                string activationContext = System.Environment.GetEnvironmentVariable(constActivationContextEnvVariable);
                 if (!string.IsNullOrEmpty(activationContext))
                 {
                     s_AsmMscorlib = typeof(Object).Assembly;
                     s_ActivationContext = activationContext.Split("|".ToCharArray());
 
+                    // mandatory tokens
                     appDomainInfo.ApplicationBase     = s_ActivationContext[constBaseDir];
                     appDomainInfo.ApplicationName     = s_ActivationContext[constAppName];
                     appDomainInfo.ConfigurationFile   = s_ActivationContext[constCfgFile];
@@ -69,6 +87,38 @@ namespace ADM4P
                     if (string.IsNullOrEmpty(appDomainInfo.TargetFrameworkName))
                     {
                         appDomainInfo.TargetFrameworkName = $".NETFramework,Version=v{NetVersion()}";
+                    }
+
+                    // culture
+                    string culture = s_ActivationContext[constCulture];
+                    if (!string.IsNullOrEmpty(culture))
+                    {
+                        try
+                        {
+                            var cultureInfo = CultureInfo.GetCultureInfo(culture);
+                            CultureInfo.DefaultThreadCurrentCulture = cultureInfo;
+                        }
+                        catch { }
+                    }
+
+                    // switches
+                    string switchesAR = s_ActivationContext[constSwitchesAR];
+                    if (!string.IsNullOrEmpty(switchesAR))
+                    {
+                        try
+                        {
+                            s_SwitchesAR = ulong.Parse(switchesAR);
+                        }
+                        catch { }
+                    }
+                    string switchesGeneral = s_ActivationContext[constSwitchesGeneral];
+                    if (!string.IsNullOrEmpty(switchesGeneral))
+                    {
+                        try
+                        {
+                            s_SwitchesGeneral = ulong.Parse(switchesGeneral);
+                        }
+                        catch { }
                     }
                 }
             }
@@ -140,6 +190,7 @@ namespace ADM4P
 
         private static Assembly CurrentDomain_AssemblyResolve(object sender, ResolveEventArgs args)
         {
+            var ad = AppDomain.CurrentDomain;
             var assemblyFullName = args.Name;
 
             // Ignore missing resources
@@ -148,7 +199,7 @@ namespace ADM4P
 
             // check for assemblies already loaded
             Assembly resolvedAssembly = null;
-            var asms = AppDomain.CurrentDomain.GetAssemblies();
+            var asms = ad.GetAssemblies();
             foreach (var asm in asms)
             {
                 if (asm.FullName == assemblyFullName)
@@ -164,6 +215,36 @@ namespace ADM4P
             // and append the base path of the original assembly (ie. look in the same dir)
             string assemblyExpectedFileName = assemblyFullName.Split(',')[0];
 
+            string AssemblyResolutionCultureName()
+            {
+                // check for culture of the requested assembly
+                var aName = new AssemblyName(assemblyFullName);
+                var ci = aName.CultureInfo;
+                if (ci != null && !ci.IsNeutralCulture)
+                    return ci.Name;
+
+                // check for culture of the current thread
+                ci = CultureInfo.CurrentCulture;
+                if (ci != null && !ci.IsNeutralCulture)
+                    return ci.Name;
+
+                // check for culture of the requesting assembly
+                if (args.RequestingAssembly != null && (s_SwitchesAR & SWITCH_AR_CONSIDERREQUESTINGASM) > 0)
+                {
+                    try
+                    {
+                        ci = args.RequestingAssembly.GetName().CultureInfo;
+                        if (ci != null && !ci.IsNeutralCulture)
+                            return ci.Name;
+                    }
+                    catch { }
+                }
+
+                return null;
+            }
+
+            string cultureName = AssemblyResolutionCultureName(); 
+
             Assembly AssemblyResolverInFolders()
             {
                 string AssemblyLocation(Assembly asm)
@@ -176,7 +257,7 @@ namespace ADM4P
                         {
                             var location = asm.Location;
                             if (!string.IsNullOrEmpty(location))
-                                return System.IO.Path.GetDirectoryName(location);
+                                return Path.GetDirectoryName(location);
                         }
                         catch { }
                     }
@@ -196,78 +277,134 @@ namespace ADM4P
                 // 7) Subfolders of each folder included in the search folders priority
                 // NOTE: The flexibility here is rather unlimited - the activation context can pass unlimited number of switches
                 //       (at least 64 if we want to limit ourselves to only a single activation context token)
-                List<string> lstSearchFolders = new List<string>();
-                if (!string.IsNullOrEmpty(AppDomain.CurrentDomain.BaseDirectory))
-                    lstSearchFolders.Add(AppDomain.CurrentDomain.BaseDirectory);
-                if (!string.IsNullOrEmpty(AppDomain.CurrentDomain.SetupInformation.PrivateBinPath))
-                    lstSearchFolders.Add(AppDomain.CurrentDomain.SetupInformation.PrivateBinPath);
+                // NOTE: code handles culture specific assemblies if requested
 
-                var locationAsm = AssemblyLocation(args.RequestingAssembly);
-                if (!string.IsNullOrEmpty(locationAsm))
+                // NOTE: while code is generally adheres to standard .Net rules per
+                //       https://learn.microsoft.com/en-us/dotnet/framework/deployment/how-the-runtime-locates-assemblies,
+                //       we also extend search logic to accomodate a hybrid nature of CLR hosted by Python scripting environment
+
+                List<string> lstSearchFolders = new List<string>();
+
+                // Primary folders.
+                // Order of priority is pre-set and they are not optional
+                if (!string.IsNullOrEmpty(ad.BaseDirectory))
                 {
-                    lstSearchFolders.Add(locationAsm);
+                    lstSearchFolders.Add(ad.BaseDirectory);
+                    if (cultureName != null)
+                    {
+                        lstSearchFolders.Add(Path.Combine(ad.BaseDirectory, cultureName));
+                    }
+                }
+                if (!string.IsNullOrEmpty(ad.SetupInformation.PrivateBinPath))
+                {
+                    lstSearchFolders.Add(ad.SetupInformation.PrivateBinPath);
+                    if (cultureName != null)
+                    {
+                        lstSearchFolders.Add(Path.Combine(ad.SetupInformation.PrivateBinPath, cultureName));
+                    }
                 }
 
-                lstSearchFolders.Add(s_ActivationContext[constWorkingDir]);
-                lstSearchFolders.Add(System.Environment.CurrentDirectory);
-                
-                foreach (var a in AppDomain.CurrentDomain.GetAssemblies())
+                // Location of requesting assembly - switchable
+                if (args.RequestingAssembly != null && (s_SwitchesAR & SWITCH_AR_CONSIDERREQUESTINGASM) > 0)
                 {
-                    locationAsm = AssemblyLocation(a);
+                    var locationAsm = AssemblyLocation(args.RequestingAssembly);
                     if (!string.IsNullOrEmpty(locationAsm))
                     {
                         lstSearchFolders.Add(locationAsm);
+                        if (cultureName != null)
+                        {
+                            lstSearchFolders.Add(Path.Combine(locationAsm, cultureName));
+                        }
+                    }
+                }
+
+                // Current directory - current working dir (normal OS stuff) as well as working dir at the time of AppDomain loading
+                if ((s_SwitchesAR & SWITCH_AR_ACTIVATIONWORKINGDIR) > 0)
+                {
+                    lstSearchFolders.Add(s_ActivationContext[constWorkingDir]);
+                    if (cultureName != null)
+                    {
+                        lstSearchFolders.Add(Path.Combine(s_ActivationContext[constWorkingDir], cultureName));
+                    }
+                }
+                if ((s_SwitchesAR & SWITCH_AR_WORKINGDIR) > 0)
+                {
+                    lstSearchFolders.Add(Environment.CurrentDirectory);
+                    if (cultureName != null)
+                    {
+                        lstSearchFolders.Add(Path.Combine(Environment.CurrentDirectory, cultureName));
+                    }
+                }
+
+                // Locations of currently loaded assemblies - switchable
+                if ((s_SwitchesAR & SWITCH_AR_LOADEDASMS) > 0)
+                {
+                    foreach (var a in ad.GetAssemblies())
+                    {
+                        var locationAsm = AssemblyLocation(a);
+                        if (!string.IsNullOrEmpty(locationAsm))
+                        {
+                            lstSearchFolders.Add(locationAsm);
+                        }
                     }
                 }
 
                 // remove duplicates
                 lstSearchFolders = lstSearchFolders.Distinct().ToList();
 
-                // add subfolders for each search folder
-                List<string> lstSubFolders = new List<string>();
-                void CollectDirectoryRecursive(List<string> collection, string directory, bool includeItself = true)
+                // add subfolders for each search folder - switchable
+                if ((s_SwitchesAR & SWITCH_AR_SUBFOLDERS) > 0)
                 {
-                    // add itself
-                    if (includeItself)
-                        collection.Add(directory);
-
-                    // recurse
-                    try
+                    List<string> lstSubFolders = new List<string>();
+                    void CollectDirectoryRecursive(List<string> collection, string directory, bool includeItself = true)
                     {
-                        var dir = new System.IO.DirectoryInfo(directory);
-                        var subfolders = dir.GetDirectories();
-                        foreach (var di in subfolders)
+                        // add itself
+                        if (includeItself)
+                            collection.Add(directory);
+
+                        // recurse
+                        try
                         {
-                            CollectDirectoryRecursive(collection, di.FullName);
+                            var dir = new DirectoryInfo(directory);
+                            if (Directory.Exists(dir.FullName))
+                            {
+                                var subfolders = dir.GetDirectories();
+                                foreach (var di in subfolders)
+                                {
+                                    CollectDirectoryRecursive(collection, di.FullName);
+                                }
+                            }
                         }
+                        catch { }
                     }
-                    catch { }
+                    foreach (var mainFolder in lstSearchFolders)
+                    {
+                        CollectDirectoryRecursive(lstSubFolders, mainFolder, false);
+                    }
+                    lstSearchFolders.AddRange(lstSubFolders);
                 }
-                foreach (var mainFolder in lstSearchFolders)
-                {
-                    CollectDirectoryRecursive(lstSubFolders, mainFolder, false);
-                }
-                lstSearchFolders.AddRange(lstSubFolders);
+
+                // final cleanup of duplicates
+                lstSearchFolders = lstSearchFolders.Distinct().ToList();
 
                 // in the order of provided folders, locate expected file name for the assembly
                 // load using the first find
                 foreach (var folder in lstSearchFolders)
                 {
-                    var fullAsmFileName = System.IO.Path.Combine(folder, assemblyExpectedFileName);
+                    var fullAsmFileName = Path.Combine(folder, assemblyExpectedFileName);
                     string[] assemblies = new string[] {
+                        fullAsmFileName,
                         fullAsmFileName + ".dll",
                         fullAsmFileName + ".exe"
                     };
 
                     foreach (var asmFile in assemblies)
                     {
-                        if (System.IO.File.Exists(asmFile))
+                        if (File.Exists(asmFile))
                         {
                             try
                             {
                                 var assembly = Assembly.LoadFrom(asmFile);
-                                // using the trace or debug facility may trigger circular dependencies in case the trace listener is redirected to one managed by the code
-                                // System.Diagnostics.Debug.WriteLine($"Assembly Resolver: {assemblyExpectedFileName} found in: {fullAsmFileName} Loaded as {assembly.Location}");
                                 return assembly;
                             }
                             catch { }
