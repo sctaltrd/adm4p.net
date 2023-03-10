@@ -13,5 +13,5 @@ using System.Runtime.InteropServices;
 [assembly: AssemblyCopyright("Copyright © SCT Alternative Inc. and Vadim Katsman 2023")]
 [assembly: AssemblyTrademark("")]
 [assembly: AssemblyCulture("")]
-[assembly: AssemblyVersion("100.2023.0308.0")]
-[assembly: AssemblyFileVersion("100.2023.0308.0")]
+[assembly: AssemblyVersion("100.2023.0310.0")]
+[assembly: AssemblyFileVersion("100.2023.0310.0")]
